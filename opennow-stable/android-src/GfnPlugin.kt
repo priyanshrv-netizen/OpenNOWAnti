@@ -242,6 +242,54 @@ class GfnPlugin : Plugin() {
     // ──────────────────────────────────────────────────────────────
 
     @PluginMethod
+    fun getLoginProviders(call: PluginCall) {
+        scope.launch {
+            try {
+                val client = OkHttpClient()
+                val request = Request.Builder()
+                    .url("https://pcs.geforcenow.com/v1/serviceUrls")
+                    .build()
+                
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string()
+                    if (!response.isSuccessful || body == null) {
+                        call.reject("Failed to load providers")
+                        return@launch
+                    }
+                    
+                    val json = JSONObject(body)
+                    val servers = json.optJSONArray("serviceUrls")
+                    
+                    if (servers == null) {
+                        call.resolve(JSObject().put("providers", org.json.JSONArray()))
+                        return@launch
+                    }
+                    
+                    val providers = org.json.JSONArray()
+                    for (i in 0 until servers.length()) {
+                        val server = servers.getJSONObject(i)
+                        if (server.optString("serviceType") == "PROD") {
+                            val provider = JSONObject()
+                            provider.put("idpId", server.optString("idpId", "nvidia"))
+                            provider.put("displayName", server.optString("displayName", "NVIDIA"))
+                            provider.put("streamingServiceUrl", server.optString("url"))
+                            provider.put("code", server.optString("idpId"))
+                            provider.put("priority", 0)
+                            providers.put(provider)
+                        }
+                    }
+                    
+                    val result = JSObject()
+                    result.put("providers", providers)
+                    call.resolve(result)
+                }
+            } catch (e: Exception) {
+                call.reject("Error: ${e.message}")
+            }
+        }
+    }
+
+    @PluginMethod
     fun getAuthSession(call: PluginCall) {
         scope.launch {
             val result = JSObject()
