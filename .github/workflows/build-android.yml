@@ -1,0 +1,154 @@
+name: Build Android APK
+
+on:
+  # Trigger manually from GitHub UI (Actions tab → Run workflow)
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+  # Also trigger on pushes to the main/Android branch when relevant files change
+  push:
+    branches: [ main, master, Android ]
+    paths:
+      - 'opennow-stable/**'
+      - '.github/workflows/build-android.yml'
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------ Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------ Java
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ------------------------------------------------------------------ Node.js
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: opennow-stable/package-lock.json
+
+      # ------------------------------------------------------------------ Android SDK
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          accept-android-sdk-licenses: true
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      # ------------------------------------------------------------------ npm install
+      - name: Install npm dependencies
+        working-directory: opennow-stable
+        run: npm ci --prefer-offline
+
+      # ------------------------------------------------------------------ Build web bundle
+      - name: Build web bundle (Vite → dist/)
+        working-directory: opennow-stable
+        run: npm run build:web
+
+      # ------------------------------------------------------------------ Capacitor: add android platform
+      - name: Add Capacitor Android platform (first run only)
+        working-directory: opennow-stable
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+            echo "Android platform added."
+          else
+            echo "android/ already exists, skipping cap add."
+          fi
+
+      # ------------------------------------------------------------------ Copy native plugin files
+      - name: Copy Kotlin plugin files to Android project
+        working-directory: opennow-stable
+        run: |
+          KOTLIN_DIR="android/app/src/main/kotlin/com/zortos/opennow"
+          mkdir -p "$KOTLIN_DIR"
+          cp android-src/GfnPlugin.kt    "$KOTLIN_DIR/GfnPlugin.kt"
+          cp android-src/MainActivity.kt "$KOTLIN_DIR/MainActivity.kt"
+          echo "Copied Kotlin files to $KOTLIN_DIR"
+          ls -la "$KOTLIN_DIR"
+
+      # ------------------------------------------------------------------ Patch AndroidManifest — permissions
+      - name: Patch AndroidManifest.xml — add required permissions
+        working-directory: opennow-stable/android/app/src/main
+        run: |
+          MANIFEST="AndroidManifest.xml"
+          echo "--- Before patch ---"
+          cat "$MANIFEST"
+          # Add INTERNET and NETWORK_STATE permissions if not already present
+          if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
+            sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <application|' "$MANIFEST"
+            echo "Permissions added."
+          else
+            echo "Permissions already present."
+          fi
+
+      # ------------------------------------------------------------------ Patch app/build.gradle — OkHttp
+      - name: Patch app/build.gradle — add OkHttp and coroutines
+        working-directory: opennow-stable/android/app
+        run: |
+          if ! grep -q 'okhttp' build.gradle; then
+            sed -i '/^dependencies {/a\    implementation("com.squareup.okhttp3:okhttp:4.12.0")\n    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")' build.gradle
+            echo "OkHttp + coroutines added to build.gradle"
+          else
+            echo "OkHttp already in build.gradle"
+          fi
+          cat build.gradle
+
+      # ------------------------------------------------------------------ Sync web assets
+      - name: Sync Capacitor web assets to Android project
+        working-directory: opennow-stable
+        run: npx cap sync android
+
+      # ------------------------------------------------------------------ Build APK
+      - name: Build debug APK
+        working-directory: opennow-stable/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+
+      # ------------------------------------------------------------------ Upload APK artifact
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-android-debug
+          path: opennow-stable/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      # ------------------------------------------------------------------ Summary
+      - name: Build summary
+        if: success()
+        run: |
+          echo "## ✅ OpenNOW Android APK Built Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the APK from the **Artifacts** section of this workflow run." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**To sideload on your Android device:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Enable *Install unknown apps* in Android Settings" >> $GITHUB_STEP_SUMMARY
+          echo "2. Download \`app-debug.apk\` from the Artifacts section" >> $GITHUB_STEP_SUMMARY
+          echo "3. Open the APK file on your device to install" >> $GITHUB_STEP_SUMMARY
