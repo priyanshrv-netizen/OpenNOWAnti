@@ -93,7 +93,9 @@ jobs:
         working-directory: opennow-stable
         run: |
           cp android-src/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
-          echo "Overwrote generated Manifest with full featured Reference repo Manifest."
+          mkdir -p android/app/src/main/res/xml
+          cp -r android-src/xml/* android/app/src/main/res/xml/
+          echo "Overwrote generated Manifest and copied XML resources from Reference repo."
 
       # ------------------------------------------------------------------ Patch app/build.gradle — dependencies
       - name: Patch app/build.gradle — add native dependencies
