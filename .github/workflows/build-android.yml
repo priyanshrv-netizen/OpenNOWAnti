@@ -118,6 +118,9 @@ jobs:
       - name: Build debug APK
         working-directory: opennow-stable/android
         run: |
+          # ENFORCEMENT: Delete default MainActivity.java just in case cap sync re-generated it!
+          # If both .kt and .java exist with the same package, the Android compiler ignores the Kotlin one!
+          rm -f app/src/main/java/com/zortos/opennow/MainActivity.java
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace 2>&1
         env:
