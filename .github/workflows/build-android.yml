@@ -38,10 +38,10 @@ jobs:
           distribution: 'temurin'
 
       # ------------------------------------------------------------------ Node.js
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: opennow-stable/package-lock.json
 
@@ -59,7 +59,7 @@ jobs:
       # ------------------------------------------------------------------ npm install
       - name: Install npm dependencies
         working-directory: opennow-stable
-        run: npm ci --prefer-offline
+        run: npm install
 
       # ------------------------------------------------------------------ Build web bundle
       - name: Build web bundle (Vite → dist/)
