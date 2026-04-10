@@ -103,32 +103,55 @@ class GfnPlugin : Plugin() {
     @PluginMethod
     fun getLoginProviders(call: PluginCall) {
         scope.launch {
-            // Fetch providers from GFN API
             try {
                 val req = Request.Builder()
-                    .url("https://gfn.am/v1/login-providers")
-                    .header("Content-Type", "application/json")
+                    .url("https://pcs.geforcenow.com/v1/serviceUrls")
+                    .header("Accept", "application/json")
                     .build()
-                val body = http.newCall(req).execute().use { it.body?.string() ?: "[]" }
-                val arr = try { JSONArray(body) } catch (_: Exception) { JSONArray() }
+                val body = http.newCall(req).execute().use { it.body?.string() ?: "{}" }
+                val root = JSONObject(body)
+                val info = root.optJSONObject("gfnServiceInfo") ?: JSONObject()
+                val endpoints = info.optJSONArray("gfnServiceEndpoints") ?: JSONArray()
+                
+                val providersList = mutableListOf<JSObject>()
+                for (i in 0 until endpoints.length()) {
+                    val entry = endpoints.optJSONObject(i) ?: continue
+                    val p = JSObject()
+                    p.put("idpId", entry.optString("idpId", ""))
+                    val code = entry.optString("loginProviderCode", "")
+                    p.put("code", code)
+                    p.put("displayName", if (code == "BPC") "bro.game" else entry.optString("loginProviderDisplayName", ""))
+                    p.put("streamingServiceUrl", entry.optString("streamingServiceUrl", ""))
+                    p.put("priority", entry.optInt("loginProviderPriority", 0))
+                    providersList.add(p)
+                }
+                
+                providersList.sortBy { it.optInt("priority", 0) }
+                
+                val providers = JSArray()
+                providersList.forEach { providers.put(it) }
+
                 val result = JSObject()
-                result.put("providers", JSArray(arr.toString()))
+                result.put("providers", if (providersList.isNotEmpty()) providers else getFallbackProvider())
                 call.resolve(result)
             } catch (e: Exception) {
                 // Fallback: return a minimal NVIDIA provider
-                val fallback = JSArray().apply {
-                    put(JSONObject().apply {
-                        put("idpId", "nvidia")
-                        put("code",  "nvidia")
-                        put("displayName", "NVIDIA")
-                        put("streamingServiceUrl", "https://api-prod.nvidia.com/gfn/v1")
-                        put("priority", 0)
-                    })
-                }
                 val result = JSObject()
-                result.put("providers", fallback)
+                result.put("providers", getFallbackProvider())
                 call.resolve(result)
             }
+        }
+    }
+
+    private fun getFallbackProvider(): JSArray {
+        return JSArray().apply {
+            put(JSONObject().apply {
+                put("idpId", "nvidia")
+                put("code",  "NVIDIA")
+                put("displayName", "NVIDIA")
+                put("streamingServiceUrl", "https://prod.cloudmatchbeta.nvidiagrid.net/")
+                put("priority", 0)
+            })
         }
     }
 
