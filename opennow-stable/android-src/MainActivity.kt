@@ -10,8 +10,8 @@ import com.getcapacitor.BridgeActivity
 
 class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        registerPlugin(GfnPlugin::class.java)
         super.onCreate(savedInstanceState)
+        registerPlugin(GfnPlugin::class.java)
         // Draw edge-to-edge so the WebView fills under system bars.
         // CSS then uses env(safe-area-inset-*) to avoid overlap.
         WindowCompat.setDecorFitsSystemWindows(window, false)
