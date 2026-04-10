@@ -205,7 +205,7 @@ function buildCapacitorApi(): OpenNowApi {
         callNativePlugin<Settings>("getSettings"),
         8000,
         DEFAULT_SETTINGS,
-      ),
+      ).catch(() => DEFAULT_SETTINGS as Settings),
     setSetting: (key, value) => callNativePlugin("setSetting", { key, value: value as any }),
     resetSettings: () => callNativePlugin("resetSettings"),
 
