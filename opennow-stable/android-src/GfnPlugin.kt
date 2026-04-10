@@ -132,23 +132,23 @@ class GfnPlugin : Plugin() {
                 providersList.forEach { providers.put(it) }
 
                 val result = JSObject()
-                result.put("providers", if (providersList.isNotEmpty()) providers else getFallbackProvider())
+                result.put("providers", if (providersList.isNotEmpty()) providers else getFallbackProvider(null))
                 call.resolve(result)
             } catch (e: Exception) {
-                // Fallback: return a minimal NVIDIA provider
+                // Fallback: return a minimal NVIDIA provider injected with the error trace!
                 val result = JSObject()
-                result.put("providers", getFallbackProvider())
+                result.put("providers", getFallbackProvider(e.message))
                 call.resolve(result)
             }
         }
     }
 
-    private fun getFallbackProvider(): JSArray {
+    private fun getFallbackProvider(errorLog: String?): JSArray {
         return JSArray().apply {
-            put(JSONObject().apply {
+            put(JSObject().apply {
                 put("idpId", "nvidia")
                 put("code",  "NVIDIA")
-                put("displayName", "NVIDIA")
+                put("displayName", if (errorLog != null) "Err: " + errorLog.take(20) else "NVIDIA")
                 put("streamingServiceUrl", "https://prod.cloudmatchbeta.nvidiagrid.net/")
                 put("priority", 0)
             })
