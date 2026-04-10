@@ -121,23 +121,24 @@ function buildCapacitorApi(): OpenNowApi {
         callNativePlugin("getAuthSession", input as any),
         8000,
         { session: null, refresh: { attempted: false, forced: false, outcome: "not_attempted", message: "Plugin timeout" } }
-      ),
+      ).catch(() => ({ session: null, refresh: { attempted: false, forced: false, outcome: "failed", message: "Native bridge error" } }) as any),
     getLoginProviders: () =>
       callNativePlugin<{ providers: any[] }>("getLoginProviders").then((r) => {
-        const list = r.providers ?? [];
+        const list = r?.providers ?? [];
         list.push({
-          idpId: "debug",
-          code: "DEBUG",
-          displayName: `Debug (${list.length})`,
-          streamingServiceUrl: "https://example.com",
-          priority: 999
+          idpId: "debug", code: "DEBUG", displayName: `Debug (${list.length})`,
+          streamingServiceUrl: "https://example.com", priority: 999
         });
         return list;
-      }),
+      }).catch((e) => [
+        { idpId: "nvidia", code: "NVIDIA", displayName: `Err: ${String(e).slice(0, 15)}`, streamingServiceUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/", priority: 0 }
+      ]),
     getRegions: (input?) => {
       const token = (input as any)?.token;
       const baseUrl = (input as any)?.providerStreamingBaseUrl ?? (input as any)?.streamingBaseUrl ?? "";
-      return callNativePlugin<{ regions: any[] }>("getRegions", { token, streamingBaseUrl: baseUrl }).then((r) => r.regions ?? []);
+      return callNativePlugin<{ regions: any[] }>("getRegions", { token, streamingBaseUrl: baseUrl })
+        .then((r) => r?.regions ?? [])
+        .catch(() => []);
     },
     login: (input) => callNativePlugin("login", input as any),
     logout: () => callNativePlugin("logout"),
