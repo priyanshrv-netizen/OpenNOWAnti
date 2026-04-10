@@ -6,10 +6,10 @@ import ReactDOM from "react-dom/client";
 import { getPlatformApi, isAndroid } from "./platform/index";
 
 const installPlatformApi = () => {
-  if (isAndroid()) {
-    // On Android the preload script doesn't run, so window.openNow is unset.
-    // Install the Capacitor-backed platform API here so every component that
-    // calls window.openNow.xxx gets the correct implementation.
+  // If window.openNow is undefined, we are not in Electron (which mounts it via preload).
+  // We unconditionally inject the Capacitor-backed API here. Even if window.Capacitor
+  // hasn't fully attached yet, the bridge methods will work when called later during React mount.
+  if (!(window as any).openNow) {
     (window as any).openNow = getPlatformApi();
   }
 };

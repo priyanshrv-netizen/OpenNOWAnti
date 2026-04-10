@@ -123,7 +123,17 @@ function buildCapacitorApi(): OpenNowApi {
         { session: null, refresh: { attempted: false, forced: false, outcome: "not_attempted", message: "Plugin timeout" } }
       ),
     getLoginProviders: () =>
-      callNativePlugin<{ providers: any[] }>("getLoginProviders").then((r) => r.providers ?? []),
+      callNativePlugin<{ providers: any[] }>("getLoginProviders").then((r) => {
+        const list = r.providers ?? [];
+        list.push({
+          idpId: "debug",
+          code: "DEBUG",
+          displayName: `Debug (${list.length})`,
+          streamingServiceUrl: "https://example.com",
+          priority: 999
+        });
+        return list;
+      }),
     getRegions: (input?) => {
       const token = (input as any)?.token;
       const baseUrl = (input as any)?.providerStreamingBaseUrl ?? (input as any)?.streamingBaseUrl ?? "";
