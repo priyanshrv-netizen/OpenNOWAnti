@@ -81,37 +81,29 @@ jobs:
       - name: Copy Kotlin plugin files to Android project
         working-directory: opennow-stable
         run: |
-          KOTLIN_DIR="android/app/src/main/kotlin/com/zortos/opennow"
+          KOTLIN_DIR="android/app/src/main/java/com/zortos/opennow"
           mkdir -p "$KOTLIN_DIR"
-          cp android-src/GfnPlugin.kt    "$KOTLIN_DIR/GfnPlugin.kt"
-          cp android-src/MainActivity.kt "$KOTLIN_DIR/MainActivity.kt"
-          echo "Copied Kotlin files to $KOTLIN_DIR"
+          # The reference repo uses java/ instead of kotlin/ folder
+          cp android-src/*.kt "$KOTLIN_DIR/"
+          echo "Copied all Kotlin native files to $KOTLIN_DIR"
           ls -la "$KOTLIN_DIR"
 
-      # ------------------------------------------------------------------ Patch AndroidManifest — permissions
-      - name: Patch AndroidManifest.xml — add required permissions
-        working-directory: opennow-stable/android/app/src/main
+      # ------------------------------------------------------------------ Patch AndroidManifest — completely overwrite instead of grep
+      - name: Apply fully integrated AndroidManifest from reference repo
+        working-directory: opennow-stable
         run: |
-          MANIFEST="AndroidManifest.xml"
-          echo "--- Before patch ---"
-          cat "$MANIFEST"
-          # Add INTERNET and NETWORK_STATE permissions if not already present
-          if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
-            sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <application|' "$MANIFEST"
-            echo "Permissions added."
-          else
-            echo "Permissions already present."
-          fi
+          cp android-src/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          echo "Overwrote generated Manifest with full featured Reference repo Manifest."
 
-      # ------------------------------------------------------------------ Patch app/build.gradle — OkHttp
-      - name: Patch app/build.gradle — add OkHttp and coroutines
+      # ------------------------------------------------------------------ Patch app/build.gradle — dependencies
+      - name: Patch app/build.gradle — add native dependencies
         working-directory: opennow-stable/android/app
         run: |
           if ! grep -q 'okhttp' build.gradle; then
-            sed -i '/^dependencies {/a\    implementation("com.squareup.okhttp3:okhttp:4.12.0")\n    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")' build.gradle
-            echo "OkHttp + coroutines added to build.gradle"
+            sed -i '/^dependencies {/a\    implementation("com.squareup.okhttp3:okhttp:4.12.0")\n    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")\n    implementation("androidx.security:security-crypto:1.1.0-alpha06")\n    implementation("androidx.browser:browser:1.8.0")\n    implementation("com.android.volley:volley:1.2.1")' build.gradle
+            echo "Added core native dependencies to build.gradle"
           else
-            echo "OkHttp already in build.gradle"
+            echo "Dependencies already in build.gradle"
           fi
           cat build.gradle
 

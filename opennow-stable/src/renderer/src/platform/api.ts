@@ -1,23 +1,26 @@
 /**
- * platform/api.ts
+ * Platform API bridge.
  *
- * Platform API bridge — the renderer calls functions from this file
- * instead of touching window.openNow (Electron) or Capacitor plugins directly.
+ * The renderer always calls functions from this file instead of touching
+ * window.openNow (Electron) or Capacitor plugins (Android) directly.
  *
- * On Electron everything forwards to the existing window.openNow API.
- * On Android / Capacitor we call the GfnPlugin that lives in the Android project,
- * and use browser-native WebSocket signaling via BrowserSignalingClient.
+ * On Electron everything just forwards to the existing window.openNow API.
+ * On Android / Capacitor we call the GfnPlugin that lives in the Android project.
+ *
+ * NOTE: The Capacitor plugin paths below (e.g. "@capacitor/...") will only resolve
+ * once you run `npm install @capacitor/core @capacitor/android` inside opennow-stable.
+ * Until then the Electron path is the only one compiled. The Android build is wired
+ * up separately via `npx cap add android` after the npm install.
  */
 
 import { getPlatform } from "./detect";
-import type { OpenNowApi, Settings } from "@shared/gfn";
+import type { OpenNowApi } from "@shared/gfn";
+import { createSession, pollSession, stopSession, getActiveSessions, claimSession } from "@main/gfn/cloudmatch";
+import { fetchMainGames, fetchLibraryGames, fetchPublicGames as fetchPublicGamesElectron, resolveLaunchAppId } from "@main/gfn/games";
 import { BrowserSignalingClient } from "./browserSignaling";
 
-// ---------------------------------------------------------------------------
-// Capacitor bridge helpers
-// ---------------------------------------------------------------------------
-
-/** Call a Capacitor native plugin method directly via the low-level bridge. */
+// Call a Capacitor native plugin method directly via the low-level bridge.
+// This bypasses registerPlugin() which behaves inconsistently across Capacitor versions.
 function callCapacitor(plugin: string, method: string, args: object = {}): Promise<any> {
   return new Promise((resolve, reject) => {
     const cap = (window as any).Capacitor;
@@ -39,7 +42,7 @@ function callCapacitor(plugin: string, method: string, args: object = {}): Promi
   });
 }
 
-/** Wraps a plugin call with a timeout so a hung Kotlin coroutine can't freeze the UI. */
+// Wraps a plugin call with a timeout so a hung Kotlin coroutine can't freeze the UI.
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
     promise,
@@ -47,120 +50,74 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   ]);
 }
 
-// ---------------------------------------------------------------------------
-// Electron path
-// ---------------------------------------------------------------------------
+// --- Electron path ---
 
 function getElectronApi(): OpenNowApi {
   const api = (window as any).openNow as OpenNowApi | undefined;
   if (!api) {
-    throw new Error("window.openNow is not available — are you running outside of Electron?");
+    throw new Error("window.openNow is not available -- are you running outside of Electron?");
   }
   return api;
 }
 
-// ---------------------------------------------------------------------------
-// Capacitor / Android path
-// ---------------------------------------------------------------------------
+// --- Capacitor / Android path ---
 
+/**
+ * Call a method on the native GfnPlugin via Capacitor.
+ * On Android the plugin is implemented in Kotlin inside the android/ folder.
+ */
 async function callNativePlugin<T>(method: string, args?: Record<string, unknown>): Promise<T> {
   return callCapacitor("GfnPlugin", method, args ?? {}) as Promise<T>;
 }
 
-const DEFAULT_SETTINGS: Settings = {
-  resolution: "1920x1080",
-  aspectRatio: "16:9",
-  fps: 60,
-  maxBitrateMbps: 75,
-  codec: "H264",
-  decoderPreference: "auto",
-  encoderPreference: "auto",
-  colorQuality: "10bit_420",
-  region: "",
-  clipboardPaste: false,
-  mouseSensitivity: 1,
-  mouseAcceleration: 0,
-  shortcutToggleStats: "F3",
-  shortcutTogglePointerLock: "F8",
-  shortcutStopStream: "Ctrl+Shift+Q",
-  shortcutToggleAntiAfk: "Ctrl+Shift+K",
-  shortcutToggleMicrophone: "Ctrl+Shift+M",
-  shortcutScreenshot: "F12",
-  shortcutToggleRecording: "Ctrl+Shift+R",
-  microphoneMode: "disabled",
-  microphoneDeviceId: "",
-  hideStreamButtons: false,
-  controllerMode: false,
-  controllerUiSounds: false,
-  autoLoadControllerLibrary: false,
-  controllerBackgroundAnimations: false,
-  autoFullScreen: false,
-  favoriteGameIds: [],
-  sessionCounterEnabled: false,
-  sessionClockShowEveryMinutes: 60,
-  sessionClockShowDurationSeconds: 30,
-  windowWidth: 1400,
-  windowHeight: 900,
-  keyboardLayout: "en-US",
-  gameLanguage: "en_US",
-  enableL4S: false,
-} as any;
-
+/**
+ * Thin wrapper that builds an OpenNowApi-compatible object over Capacitor.
+ *
+ * Each method maps 1:1 to a method on the Kotlin GfnPlugin. The plugin itself
+ * makes the same HTTP calls that the Electron main process makes, but from
+ * the Android layer (OkHttp / Retrofit).
+ *
+ * For WebRTC the renderer still does all the work -- Android just supplies
+ * auth tokens, session data, and signaling messages the same way Electron does.
+ */
 function buildCapacitorApi(): OpenNowApi {
+  // Browser-native signaling client (WebSocket running in the WebView).
+  // This replaces the Kotlin AndroidSignalingManager + Capacitor event bridge.
   let browserSignaling: BrowserSignalingClient | null = null;
   const signalingListeners = new Set<Function>();
   const fullscreenListeners = new Set<Function>();
 
-  const noop = () => Promise.resolve() as any;
-  const noopUnsub = () => () => {};
-
   return {
-    // ----- Auth -----
     getAuthSession: (input?) =>
       withTimeout(
         callNativePlugin("getAuthSession", input as any),
         8000,
         { session: null, refresh: { attempted: false, forced: false, outcome: "not_attempted", message: "Plugin timeout" } }
-      ).catch(() => ({ session: null, refresh: { attempted: false, forced: false, outcome: "failed", message: "Native bridge error" } }) as any),
+      ),
     getLoginProviders: () =>
-      callNativePlugin<{ providers: any[] }>("getLoginProviders").then((r) => {
-        const list = r?.providers ?? [];
-        list.push({
-          idpId: "debug", code: "DEBUG", displayName: `Debug (${list.length})`,
-          streamingServiceUrl: "https://example.com", priority: 999
-        });
-        return list;
-      }).catch((e) => [
-        { idpId: "nvidia", code: "NVIDIA", displayName: `Err: ${String(e).slice(0, 15)}`, streamingServiceUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/", priority: 0 }
-      ]),
+      callNativePlugin<{ providers: any[] }>("getLoginProviders").then((r) => r.providers ?? []),
     getRegions: (input?) => {
       const token = (input as any)?.token;
       const baseUrl = (input as any)?.providerStreamingBaseUrl ?? (input as any)?.streamingBaseUrl ?? "";
-      return callNativePlugin<{ regions: any[] }>("getRegions", { token, streamingBaseUrl: baseUrl })
-        .then((r) => r?.regions ?? [])
-        .catch(() => []);
+      return callNativePlugin<{ regions: any[] }>("getRegions", { token, streamingBaseUrl: baseUrl }).then((r) => r.regions ?? []);
     },
+
     login: (input) => callNativePlugin("login", input as any),
     logout: () => callNativePlugin("logout"),
 
-    // ----- Games & Subscription -----
     fetchSubscription: () => Promise.resolve(null as any),
-    fetchMainGames: (input) => callNativePlugin("fetchMainGames", input as any),
-    fetchLibraryGames: (input) => callNativePlugin("fetchLibraryGames", input as any),
-    fetchPublicGames: () => callNativePlugin("fetchPublicGames"),
-    resolveLaunchAppId: (input) => callNativePlugin("resolveLaunchAppId", input as any),
+    fetchMainGames: (input) => fetchMainGames((input as any).token, (input as any).providerStreamingBaseUrl),
+    fetchLibraryGames: (input) => fetchLibraryGames((input as any).token, (input as any).providerStreamingBaseUrl),
+    fetchPublicGames: () => fetchPublicGamesElectron(),
+    resolveLaunchAppId: (input) => resolveLaunchAppId((input as any).token, (input as any).appIdOrUuid, (input as any).providerStreamingBaseUrl),
 
-    // ----- Session -----
-    createSession: (input) => callNativePlugin("createSession", input as any),
-    pollSession: (input) => callNativePlugin("pollSession", input as any),
-    reportSessionAd: (input) => callNativePlugin("reportSessionAd", input as any),
-    stopSession: (input) => callNativePlugin("stopSession", input as any),
-    getActiveSessions: (token?, streamingBaseUrl?) =>
-      callNativePlugin<any[]>("getActiveSessions", { token: token ?? "", streamingBaseUrl: streamingBaseUrl ?? "" }).catch(() => []),
-    claimSession: (input) => callNativePlugin("claimSession", input as any),
+    createSession: (input) => createSession(input as any),
+    pollSession: (input) => pollSession(input as any),
+    stopSession: (input) => stopSession(input as any),
+    getActiveSessions: (token?, streamingBaseUrl?) => getActiveSessions(token ?? "", streamingBaseUrl ?? ""),
+    claimSession: (input) => claimSession(input as any),
     showSessionConflictDialog: () => callNativePlugin("showSessionConflictDialog"),
 
-    // ----- Signaling (browser-native WebSocket) -----
     connectSignaling: async (input) => {
       browserSignaling?.disconnect();
       browserSignaling = new BrowserSignalingClient(
@@ -183,72 +140,55 @@ function buildCapacitorApi(): OpenNowApi {
     sendIceCandidate: async (input) => {
       browserSignaling?.sendIceCandidate(input as any);
     },
-    requestKeyframe: noop,
+
     onSignalingEvent: (listener) => {
       signalingListeners.add(listener);
       return () => signalingListeners.delete(listener);
     },
 
-    // ----- Fullscreen / UI -----
+    // Fullscreen on Android is handled by the WebView / native layer.
+    // We expose no-op implementations so the renderer code compiles unchanged.
     onToggleFullscreen: (listener) => {
       fullscreenListeners.add(listener);
       return () => fullscreenListeners.delete(listener);
     },
-    quitApp: noop,
-    setFullscreen: noop,
     toggleFullscreen: () => callNativePlugin("toggleFullscreen"),
-    togglePointerLock: () => Promise.resolve(), // no pointer lock on touch screens
     setOrientation: (mode: string) => callNativePlugin("setOrientation", { mode }),
+    togglePointerLock: () => Promise.resolve(), // no pointer lock on touch screens
 
-    // ----- Settings -----
     getSettings: () =>
       withTimeout(
-        callNativePlugin<Settings>("getSettings"),
+        callNativePlugin("getSettings"),
         8000,
-        DEFAULT_SETTINGS,
-      ).catch(() => DEFAULT_SETTINGS as Settings),
-    setSetting: (key, value) => callNativePlugin("setSetting", { key, value: value as any }),
+        // Default settings returned if the plugin hangs
+        {
+          resolution: "1920x1080", fps: 60, maxBitrateMbps: 75, codec: "H264",
+          decoderPreference: "auto", encoderPreference: "auto", colorQuality: "10bit_420",
+          region: "", clipboardPaste: false, mouseSensitivity: 1,
+          shortcutToggleStats: "F3", shortcutTogglePointerLock: "F8",
+          shortcutStopStream: "Ctrl+Shift+Q", shortcutToggleAntiAfk: "Ctrl+Shift+K",
+          shortcutToggleMicrophone: "Ctrl+Shift+M", microphoneMode: "disabled",
+          microphoneDeviceId: "", hideStreamButtons: false,
+          sessionClockShowEveryMinutes: 60, sessionClockShowDurationSeconds: 30,
+          windowWidth: 1400, windowHeight: 900,
+        } as any
+      ),
+    setSetting: (key, value) => callNativePlugin("setSetting", { key, value }),
     resetSettings: () => callNativePlugin("resetSettings"),
-
-    // ----- Misc -----
-    exportLogs: () => Promise.resolve(""),
-    pingRegions: (regions) =>
-      callNativePlugin<any>("pingRegions", { urls: regions.map((r) => r.url) })
-        .then((r: any) => {
-          const results = r?.results ?? {};
-          return regions.map((region) => ({
-            url: region.url,
-            pingMs: typeof results[region.url] === "number" ? results[region.url] : null,
-          }));
-        })
-        .catch(() => regions.map((r) => ({ url: r.url, pingMs: null }))),
-    deleteCache: noop,
-
-    // ----- Screenshots / Recordings — no-op on Android -----
-    saveScreenshot: noop,
-    listScreenshots: () => Promise.resolve([]),
-    deleteScreenshot: noop,
-    saveScreenshotAs: () => Promise.resolve({ saved: false }),
-    onTriggerScreenshot: noopUnsub as any,
-    beginRecording: () => Promise.resolve({ recordingId: "" }),
-    sendRecordingChunk: noop,
-    finishRecording: noop,
-    abortRecording: noop,
-    listRecordings: () => Promise.resolve([]),
-    deleteRecording: noop,
-    showRecordingInFolder: noop,
-    listMediaByGame: () => Promise.resolve({ screenshots: [], videos: [] }),
-    getMediaThumbnail: () => Promise.resolve(null),
-    showMediaInFolder: noop,
-  } as any;
+    pingRegions: (urls: string[]) =>
+      callNativePlugin<{ results: Record<string, number> }>("pingRegions", { urls }),
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Singleton export
-// ---------------------------------------------------------------------------
+// --- Exported singleton ---
 
 let _api: OpenNowApi | null = null;
 
+/**
+ * Get the platform API. Call this instead of window.openNow everywhere.
+ *
+ * The result is cached after the first call so we never rebuild it.
+ */
 export function getPlatformApi(): OpenNowApi {
   if (_api) return _api;
 
@@ -258,7 +198,8 @@ export function getPlatformApi(): OpenNowApi {
   } else if (platform === "capacitor") {
     _api = buildCapacitorApi();
   } else {
-    // Plain web / dev server
+    // Plain web / dev server -- forward to Electron API if accidentally present,
+    // otherwise throw a clear error.
     try {
       _api = getElectronApi();
     } catch {
